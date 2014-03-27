@@ -1,0 +1,52 @@
+module alu
+(
+	input logic [31:0] portA, portB,
+	input logic [3:0] aluop,
+	output logic [31:0] outPort,
+	output logic negF, zerF, oveF
+);
+
+always_comb begin
+	if(aluop == 4'b0000) // AND
+	begin
+		outPort = portA & portB;
+	end
+	else if(aluop == 4'b0001) // OR
+	begin
+		outPort = portA | portB;
+	end	
+	else if(aluop == 4'b0010) // XOR
+	begin
+		outPort = portA ^ portB;
+	end	
+	else if(aluop == 4'b0011) // NOR
+	begin
+		outPort = ~(portA | portB);
+	end
+	else if(aluop == 4'b0100) // Logical Shift Left
+		outPort = portA << 1;
+	else if(aluop == 4'b0101) // Logical Shift Right
+		outPort = portA >> 1;
+	else if(aluop == 4'b0110) // add
+		outPort = portA + portB;
+	else if(aluop == 4'b0111) // subtract
+	begin
+		outPort = portA - portB;
+	end
+	else if(aluop == 4'b1000) // Unsigned Set Less Than
+	begin
+		outPort = (portA < portB);
+	end
+	else if(aluop == 4'b1001) // Signed Set Less Than
+	begin
+		outPort = ($signed(portA) < $signed(portB));
+	end
+	else
+		outPort = '0;
+end
+
+assign negF = outPort[31];
+assign zerF = (outPort == 0);
+assign oveF = (!portA[31] && !portB[31] && outPort[31]);
+
+endmodule

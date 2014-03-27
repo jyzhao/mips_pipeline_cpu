@@ -1,0 +1,223 @@
+// interfaces
+`include "datapath_cache_if.vh"
+`include "cache_control_if.vh"
+
+// cpu types
+`include "cpu_types_pkg.vh"
+
+module caches (
+  input logic CLK, nRST,
+  datapath_cache_if.cache dcif,
+  cache_control_if.caches ccif
+);
+  // import types
+  import cpu_types_pkg::word_t;
+
+  parameter CPUID = 0;
+
+  word_t instr;
+
+  // dcache
+  // dcache  DCACHE(dcif, ccif);
+  // word_t [15:0][1:0] dcache_register;  
+
+
+  // ### ICACHE ###
+  // Direct Mapped
+  // One word per block
+
+  //icache  ICACHE(dcif, ccif); // When to use this?
+  logic [15:0][58:0] icache_register;
+  // 58    => Valid bit
+  // 57:32 => Tag
+  // 31:0  => Data
+
+  // For [31:0] Address
+  // [1:0]  => Byte Offset (thrown away)
+  // [5:2]  => Index (4 bits for 16 places)
+  // [31:6] => Tag (26 bits)
+
+  logic [3:0]  i_AddrInd;
+  logic [25:0] i_AddrTag;
+  logic [25:0] i_tag;
+  logic [31:0] i_data;
+  logic i_valid,i_hit,i_ready;
+
+  assign i_AddrTag = dcif.imemaddr[31:6];
+  assign i_AddrInd = dcif.imemaddr[5:2];
+
+  assign i_valid = icache_register[i_AddrInd][58];
+  assign i_tag   = icache_register[i_AddrInd][57:32];
+  assign i_data  = icache_register[i_AddrInd][31:0];
+
+  assign i_hit = (i_AddrTag == i_tag);
+
+    
+// States
+typedef enum {RESET,COMPARE,IDLE,ALLOCATE,SET_CACHE} istates;
+istates i_state, i_nstate;
+
+  // Cache State Machine
+  always_ff @(posedge CLK, negedge nRST)
+  begin
+    if(!nRST)
+      i_state <= IDLE;
+    else
+      i_state <= i_nstate;
+  end
+
+  // Next State Logic for icache
+  always_comb
+  begin
+    case (i_state)
+      IDLE:
+        begin
+          if(dcif.imemREN && (~i_valid || ~i_hit))
+            i_nstate = ALLOCATE;
+          else
+            i_nstate = IDLE;
+    	  end
+      ALLOCATE:
+        begin
+          if(~ccif.iwait[CPUID])
+            i_nstate = SET_CACHE;
+          else
+            i_nstate = ALLOCATE;
+        end
+      SET_CACHE:
+        begin
+          i_nstate = IDLE;
+        end
+      RESET:
+        begin
+          i_nstate = IDLE;
+        end
+    endcase
+  end
+  
+  // Output Logic for icache
+  always_comb
+  begin
+    ccif.iREN[CPUID] = 0;
+    ccif.iaddr[CPUID] = 0;
+    i_ready = 0;
+
+    // No change in cache register
+    icache_register[i_AddrInd][58]    = icache_register[i_AddrInd][58];
+    icache_register[i_AddrInd][57:32] = icache_register[i_AddrInd][57:32];
+    icache_register[i_AddrInd][31:0]  = icache_register[i_AddrInd][31:0];
+
+    case (i_state)
+      IDLE:
+        begin
+          i_ready = 1;
+        end
+      ALLOCATE:
+        begin
+          ccif.iREN[CPUID]  = dcif.imemREN;
+          ccif.iaddr[CPUID] = dcif.imemaddr;
+        end
+      SET_CACHE:
+        begin
+          icache_register[i_AddrInd][58]    = 1; // Set Valid Flag
+          icache_register[i_AddrInd][57:32] = i_AddrTag;
+          icache_register[i_AddrInd][31:0]  = ccif.iload[CPUID];
+        end
+    endcase
+  end
+  
+  // Actual Outputs that are seen by the datapath
+  assign dcif.imemload = (dcif.imemREN && i_valid && i_hit) ? i_data : 0;
+  assign dcif.ihit = i_ready;
+  // ### ICACHE ###
+
+  // ### DCACHE ###
+  // Two way associative -> Two blocks per set?
+  // Two words per block
+
+  logic [7:0][182:0] dcache_register;
+  // SET 1 [182:92]
+  // 182     => Least Recnetly Used bit
+  // 181     => Valid bit
+  // 180:155 => Tag
+  // 154:123 => Block 1 Data
+  // 122:92  => Block 2 Data
+
+  // SET 2 [91:0]
+  // 91      => Least Recently Used bit
+  // 90      => Valid bit
+  // 89:64   => Tag
+  // 63:32   => Block 1 Data
+  // 31:0    => Block 2 Data
+
+  // For [31:0] Address
+  // [1:0]  => Byte Offset (thrown away)
+  // 2      => Block Offset
+  // [5:3]  => Index (3 bits for 8 places)
+  // [31:6] => Tag (26 bits)
+
+  logic [2:0]  d_AddrInd;
+  logic [25:0] d_AddrTag;
+  logic [25:0] d_s1Tag, d_s2Tag;
+  logic [31:0] d_s1Data, d_s1Block1, d_s1Block2, d_s2Data, d_s2Block1, d_s2Block2;
+  logic d_s1Valid, d_s1Hit, d_s1LRU, d_s2Valid, d_s2Hit, d_s2LRU, d_blockOffset;
+
+  assign d_AddrTag = dcif.dmemaddr[31:6];
+  assign d_AddrInd = dcif.dmemaddr[5:3];
+  assign d_blockOffset = dcif.dmemaddr[2];
+
+  assign d_s1LRU    = icache_register[i_AddrInd][182];
+  assign d_s1Valid  = icache_register[i_AddrInd][181];
+  assign d_s1Tag    = icache_register[i_AddrInd][180:155];
+  assign d_s1Block1 = icache_register[i_AddrInd][154:123];
+  assign d_s1Block2 = icache_register[i_AddrInd][122:92];
+
+  assign d_s2LRU    = icache_register[i_AddrInd][91];
+  assign d_s2Valid  = icache_register[i_AddrInd][90];
+  assign d_s2Tag    = icache_register[i_AddrInd][89:64];
+  assign d_s2Block1 = icache_register[i_AddrInd][63:32];
+  assign d_s2Block2 = icache_register[i_AddrInd][31:0];
+
+  assign d_s1Data = (d_blockOffset) ? d_s1Block2 : d_s1Block2;
+  assign d_s2Data = (d_blockOffset) ? d_s2Block2 : d_s2Block2;
+
+  assign d_s1Hit = (d_AddrTag == d_s1Tag);
+  assign d_s2Hit = (d_AddrTag == d_s2Tag);
+
+  // ### DCACHE ###
+
+  // assign dcif.dmemload = dcache_register[index][block_offset];
+
+  // single cycle instr saver (for memory ops)
+  always_ff @(posedge CLK)
+  begin
+    if (!nRST)
+    begin
+      instr <= 0;
+    end
+    else
+    if (!ccif.iwait[CPUID])
+    begin
+      instr <= ccif.iload[CPUID];
+    end
+  end
+  // dcache invalidate before halt
+  assign dcif.flushed = dcif.halt;
+
+  //single cycle
+  /*
+  assign dcif.ihit = (dcif.imemREN) ? ~ccif.iwait[CPUID] : 0;
+  assign dcif.dhit = (dcif.dmemREN|dcif.dmemWEN) ? ~ccif.dwait[CPUID] : 0;
+  assign dcif.imemload = (ccif.iwait[CPUID]) ? instr : ccif.iload[CPUID];
+  assign dcif.dmemload = ccif.dload[CPUID];
+
+
+  assign ccif.iREN[CPUID] = dcif.imemREN;
+  assign ccif.dREN[CPUID] = dcif.dmemREN;
+  assign ccif.dWEN[CPUID] = dcif.dmemWEN;
+  assign ccif.dstore[CPUID] = dcif.dmemstore;
+  assign ccif.iaddr[CPUID] = dcif.imemaddr;
+  assign ccif.daddr[CPUID] = dcif.dmemaddr;
+  */
+
+endmodule
